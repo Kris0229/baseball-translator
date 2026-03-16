@@ -88,6 +88,7 @@
   .api-note { font-size: 11px; color: var(--text-hint); margin-top: 6px; }
   .api-note a { color: var(--accent-text); text-decoration: none; }
   .api-note a:hover { text-decoration: underline; }
+  .key-saved { font-size: 11px; color: var(--green-text); margin-top: 4px; display: none; }
 
   /* ── Card ── */
   .card {
@@ -238,11 +239,13 @@
   <div class="api-section">
     <div class="card-title">Anthropic API Key</div>
     <div class="api-row">
-      <input type="password" id="apiKey" placeholder="sk-ant-api03-..." autocomplete="off" />
+      <input type="password" id="apiKey" placeholder="sk-ant-api03-..." autocomplete="off" oninput="saveKey()" />
       <button class="btn btn-ghost btn-sm" onclick="toggleKey()">顯示</button>
+      <button class="btn btn-ghost btn-sm" onclick="clearKey()">清除</button>
     </div>
+    <div class="key-saved" id="keySaved">&#10003; 已儲存，下次開啟自動帶入</div>
     <div class="api-note">
-      金鑰僅存在瀏覽器記憶體，不會上傳任何伺服器。
+      金鑰儲存於瀏覽器本地（localStorage），不會上傳任何伺服器。
       還沒有 API Key？前往 <a href="https://console.anthropic.com/keys" target="_blank">console.anthropic.com</a> 申請。
     </div>
   </div>
@@ -358,6 +361,32 @@ let chips = new Set(['emoji','question']);
 let mode = 'url';
 let fetchedContent = '';
 
+// ── API Key persistence ──
+window.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('mlb_api_key');
+  if (saved) {
+    document.getElementById('apiKey').value = saved;
+    document.getElementById('keySaved').style.display = 'block';
+  }
+});
+
+function saveKey() {
+  const k = document.getElementById('apiKey').value.trim();
+  if (k) {
+    localStorage.setItem('mlb_api_key', k);
+    document.getElementById('keySaved').style.display = 'block';
+  } else {
+    localStorage.removeItem('mlb_api_key');
+    document.getElementById('keySaved').style.display = 'none';
+  }
+}
+
+function clearKey() {
+  document.getElementById('apiKey').value = '';
+  localStorage.removeItem('mlb_api_key');
+  document.getElementById('keySaved').style.display = 'none';
+}
+
 document.querySelectorAll('.chip').forEach(c => {
   c.addEventListener('click', () => {
     const o = c.dataset.opt;
@@ -369,6 +398,186 @@ function toggleKey() {
   const inp = document.getElementById('apiKey');
   inp.type = inp.type === 'password' ? 'text' : 'password';
 }
+
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('.toggle-btn').forEach((b,i) =>
+    b.classList.toggle('active', (i===0&&m==='url')||(i===1&&m==='text'))
+  );
+  document.getElementById('url-mode').style.display  = m==='url'  ? '' : 'none';
+  document.getElementById('text-mode').style.display = m==='text' ? '' : 'none';
+}
+
+function switchTab(t) {
+  document.querySelectorAll('.tab').forEach((el,i) =>
+    el.classList.toggle('active', (i===0&&t==='news')||(i===1&&t==='fb'))
+  );
+  document.getElementById('news-panel').style.display = t==='news' ? '' : 'none';
+  document.getElementById('fb-panel').style.display   = t==='fb'   ? '' : 'none';
+}
+
+function bdg(id, s) {
+  const el = document.getElementById(id);
+  if (!s) { el.style.display='none'; return; }
+  el.style.display = 'inline-block';
+  el.className = 'badge ' + (s==='wait' ? 'badge-wait' : 'badge-ok');
+  el.textContent = s==='wait' ? '生成中' : '完成';
+}
+
+function getKey() {
+  const k = document.getElementById('apiKey').value.trim();
+  if (!k) { alert('請先輸入 Anthropic API Key！'); return null; }
+  return k;
+}
+
+async function callAPI(key, body) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
+async function fetchArticle() {
+  const key = getKey(); if (!key) return;
+  const url = document.getElementById('urlInput').value.trim();
+  if (!url) { alert('請輸入網址！'); return; }
+
+  const status = document.getElementById('fetchStatus');
+  status.className = 'fetch-status';
+  status.textContent = '抓取中...';
+  fetchedContent = '';
+
+  try {
+    const data = await callAPI(key, {
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2000,
+      tools: [{ type: "web_search_20250305", name: "web_search" }],
+      messages: [{
+        role: "user",
+        content: `請搜尋並取得這篇文章的完整正文內容，只回傳英文原文，不要加任何說明：${url}`
+      }]
+    });
+
+    const text = data.content?.map(c => c.text || '').join('').trim();
+    if (text && text.length > 100) {
+      fetchedContent = text;
+      status.className = 'fetch-status ok';
+      status.textContent = `已抓取內容（約 ${text.length} 字元）`;
+    } else {
+      status.className = 'fetch-status err';
+      status.textContent = '內容過短或抓取失敗，請改用「貼原文」方式。';
+    }
+  } catch(e) {
+    status.className = 'fetch-status err';
+    status.textContent = '錯誤：' + e.message;
+  }
+}
+
+const NAMING_RULES = `
+【命名規則——必須嚴格遵守】
+1. 球員姓名：非亞洲出身 → 英文原名；亞洲出身（日、韓、台、中等）→ 繁體中文譯名（如大谷翔平、金廣鉉、陳偉殷）
+2. 球隊名稱：一律繁體中文（如洛杉磯道奇隊、紐約洋基隊、波士頓紅襪隊）
+3. 專有名詞：繁體中文，首次出現括弧內加原文（如防禦率（ERA）、指定打擊（Designated Hitter）、春季訓練（Spring Training））`;
+
+async function run() {
+  const key = getKey(); if (!key) return;
+
+  let txt = '';
+  if (mode === 'url') {
+    if (!fetchedContent) { alert('請先點「抓取文章」！'); return; }
+    txt = fetchedContent;
+  } else {
+    txt = document.getElementById('textInput').value.trim();
+    if (!txt) { alert('請先貼上原文！'); return; }
+  }
+
+  const style  = document.getElementById('style').value;
+  const league = document.getElementById('league').value;
+  const styleMap  = { formal:'正式運動新聞風格，語氣專業嚴謹，接近聯合報或自由時報體育版', lively:'活潑口語，生動有趣，接近運動筆記', neutral:'中性客觀，簡潔報導' };
+  const leagueMap = { mlb:'MLB 美國職棒大聯盟', cpbl:'CPBL 中華職棒聯盟', intl:'國際棒球賽（WBC/奧運）', auto:'自動偵測' };
+  const fbDesc = [...chips].map(o => ({'emoji':'加入適當 Emoji','hashtag':'加入中英文 hashtag（如 #MLB #棒球）','question':'結尾加互動問句引導球迷留言','summary':'開頭加精華摘要'}[o])).join('；');
+
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true; btn.textContent = '翻譯中...';
+  document.getElementById('out').style.display = '';
+  ['newsOut','fbOut'].forEach(id => {
+    document.getElementById(id).className = 'output-box muted';
+    document.getElementById(id).textContent = '生成中...';
+  });
+  bdg('nb','wait'); bdg('fbb','wait');
+
+  const newsPrompt = `你是台灣資深運動記者，請將以下棒球內容完整翻譯並改寫成繁體中文新聞稿。
+
+【絕對禁止】
+- 不得省略、跳過或壓縮任何段落
+- 原文有幾個段落，翻譯後必須有對應的完整段落
+- 不得以「……」或摘要替代任何內容
+- 所有引言、數據、細節均須完整保留
+
+【文章風格】${styleMap[style]}
+【聯賽】${leagueMap[league]}
+${NAMING_RULES}
+
+【格式】
+第一行：新聞標題
+（空行）
+導言：點出最重要事實（約50字）
+（空行）
+內文：逐段完整翻譯原文所有內容，不得刪減
+
+全程繁體中文。
+
+===原文===
+${txt}`;
+
+  const fbPrompt = `你是台灣運動媒體社群編輯，請根據以下棒球內容撰寫 Facebook 貼文（繁體中文）。
+${NAMING_RULES}
+【要求】${fbDesc || '簡潔清楚'}；字數150–220字；口吻親切；面向台灣球迷。
+
+===原文===
+${txt}`;
+
+  try {
+    const [d1, d2] = await Promise.all([
+      callAPI(key, { model:"claude-sonnet-4-20250514", max_tokens:3000, messages:[{role:"user",content:newsPrompt}] }),
+      callAPI(key, { model:"claude-sonnet-4-20250514", max_tokens:1000, messages:[{role:"user",content:fbPrompt}] })
+    ]);
+    const nText = d1.content?.map(c=>c.text||'').join('') || '生成失敗，請重試。';
+    const fText = d2.content?.map(c=>c.text||'').join('') || '生成失敗，請重試。';
+    document.getElementById('newsOut').className = 'output-box';
+    document.getElementById('newsOut').textContent = nText;
+    document.getElementById('fbOut').className = 'output-box';
+    document.getElementById('fbOut').textContent = fText;
+    bdg('nb','ok'); bdg('fbb','ok');
+  } catch(e) {
+    document.getElementById('newsOut').textContent = '錯誤：' + e.message;
+    bdg('nb',null); bdg('fbb',null);
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg> 翻譯與改寫';
+}
+
+function cp(id) {
+  navigator.clipboard.writeText(document.getElementById(id).textContent)
+    .then(() => alert('已複製到剪貼簿！'));
+}
+
+function clearAll() {
+  document.getElementById('urlInput').value = '';
+  document.getElementById('textInput').value = '';
+  document.getElementById('fetchStatus').textContent = '';
+  document.getElementById('out').style.display = 'none';
+  fetchedContent = '';
+}
+</script>
 
 function setMode(m) {
   mode = m;
